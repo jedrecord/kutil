@@ -1,0 +1,179 @@
+#!/bin/env bash
+#
+#  kutil - Display a summary of Kubernetes node and cluster resource utilization by memory, cpu, and pods
+#
+#  Author:   Jed Record <jed@jedrecord.com>
+#
+#  Copyright (C) 2020 Jed Record
+#
+
+#  This program is free software; you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation; Version 2 (GPLv2)
+
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+
+#  You should have received a copy of the GNU General Public License along
+#  with this program; if not, write to the Free Software Foundation, Inc.,
+#  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+
+# Full license text at: https://gnu.org/licenses/gpl-2.0.txt
+
+NAME="kutil"
+PURPOSE="Display a summary of Kubernetes node and cluster resource utilization by memory, cpu, and pods"
+VERSION="0.8"
+AUTHOR="Jed Record"
+EMAIL="jed@jedrecord.com"
+WEB="https://github.com/jedrecord/kutil"
+COPYRIGHT="Copyright (C) 2020 Jed Record
+License GNU GPL version 2 <https://gnu.org/licenses/gpl-2.0.html>
+This is free software; you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law."
+USAGE="Usage: kutil [OPTIONS]"
+SUMMARY="${USAGE}
+ Option            Meaning
+ -h, --help        Show usage and options
+ -i, --infra       Show only infra nodes
+ -m, --masters     Show only master nodes
+ -s, --schedulable Show only nodes which have not been tainted with NoSchedule
+                   This option will override other node selection arguments
+ -v, --version     Print version info
+ -w, --workers     Show only worker nodes
+ "
+main() {
+  while getopts ":-:himsvw" opt; do
+    case "$opt" in
+        -) check_long_opts "${OPTARG}"; shift ;;
+        h) show_help ;;
+        i) opt_infra=true ;;
+        m) opt_masters=true ;;
+        s) opt_schedulable=true ;;
+        v) show_version ;;
+        w) opt_workers=true ;;
+       \?) show_error "\"-${OPTARG}\" is an invalid option" ;;
+        :) show_error "The option \"-${OPTARG}\" requires an argumemt." ;;
+    esac
+  done
+  if [ $? -ne 0 ];then opt_none=true; fi
+  shift $((OPTIND -1))
+
+  declare -a all_nodes
+  if [[ $opt_schedulable == true ]]
+  then
+    all_nodes=$(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.taints[?(@.effect=="NoSchedule")].effect}{"\n"}{end}'|grep -v NoSchedule 2>/dev/null)
+  elif [[ $opt_infra == true || $opt_masters == true || $opt_workers == true ]]
+  then
+    if [[ $opt_infra == true ]]
+    then
+      all_nodes=$(kubectl get nodes --no-headers --selector=node-role.kubernetes.io/infra -o custom-columns=NAME:.metadata.name 2>/dev/null)
+    fi
+    if [[ $opt_masters == true ]]
+    then
+      all_nodes+=" $(kubectl get nodes --no-headers --selector=node-role.kubernetes.io/master -o custom-columns=NAME:.metadata.name 2>/dev/null)"
+    fi
+    if [[ $opt_workers == true ]]
+    then
+      all_nodes+=" $(kubectl get nodes --no-headers --selector=node-role.kubernetes.io/worker -o custom-columns=NAME:.metadata.name 2>/dev/null)"
+    fi
+  else
+    all_nodes=$(kubectl get nodes --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null)
+  fi
+
+  if [[ ${all_nodes[0]} == "" ]]
+  then
+    echo "No nodes match your selection criteria"
+    exit 1
+  fi
+
+  echo -e "NODE\t\tROLE\t\tCPU\tRAM\tPODS"
+
+  for node in $all_nodes
+  do
+    _kutil_requests=$(kubectl describe node ${node} | grep -A3 -E "\\s\sRequests" | tail -n2)
+    _kutil_percent_cpu=$(echo ${_kutil_requests} | awk -F "[()%]" '{print $2}')
+    _kutil_percent_mem=$(echo ${_kutil_requests} | awk -F "[()%]" '{print $8}')
+    _kutil_pods_running=$(kubectl describe node ${node} | awk '/Non-terminated Pods/ {match($3,/\(([0-9]+)/,n);print n[1]}')
+    _kutil_pods_cap=$(kubectl get node ${node} -o jsonpath={.status.capacity.pods})
+    _kutil_percent_pods=$((100 * _kutil_pods_running / _kutil_pods_cap))
+    _kutil_cores=$(kubectl get node ${node} -o jsonpath={.status.allocatable.cpu}|tr -d m)
+    _kutil_ram=$(kubectl get node ${node} -o jsonpath={.status.allocatable.memory}|numfmt --from=iec-i --to-unit=M)
+    _kutil_allocated_cpu=$(kubectl describe node ${node} | awk '/^  cpu/ {print $2}'|tr -d m)
+    _kutil_allocated_mem=$(kubectl describe node ${node} | awk '/^  memory/ {print $2}'|numfmt --from=iec-i --to-unit=M)
+    _kutil_role="$(kubectl describe node ${node}|grep Roles|awk '{print $2}')"
+
+    echo -e "${node}  \t${_kutil_role}  \t${_kutil_percent_cpu}%\t${_kutil_percent_mem}%\t${_kutil_percent_pods}%"
+  
+    node_count=$((node_count + 1))
+    pods_allocated=$((pods_allocated + _kutil_pods_running))
+    pods_capacity=$((pods_capacity + _kutil_pods_cap))
+    total_percent_cpu=$((total_percent_cpu + _kutil_percent_cpu))
+    total_percent_mem=$((total_percent_mem + _kutil_percent_mem))
+    cpu_avail=$((cpu_avail + _kutil_cores))
+    mem_avail=$((mem_avail + _kutil_ram))
+    cpu_alloc=$((cpu_alloc + _kutil_allocated_cpu / 1000))
+    mem_alloc=$((mem_alloc + _kutil_allocated_mem))
+
+    # Clear vars
+    unset $(compgen -v | grep "^_kutil_")
+  done
+  
+  avg_percent_cpu=$((total_percent_cpu / node_count))
+  avg_percent_mem=$((total_percent_mem / node_count))
+  pod_alloc_pct=$(awk -v a=${pods_allocated} -v b=${pods_capacity} 'BEGIN { print ( 100 * a / b ) }')
+  tot_cpu_pct=$(awk -v a=${cpu_alloc} -v b=${cpu_avail} 'BEGIN { print ( a / b ) }')
+  tot_mem_pct=$(awk -v a=${mem_alloc} -v b=${mem_avail} 'BEGIN { print ( a / b ) }')
+  
+  outp="$(printf "CPU,%d of %d millicpu,(%.2f%%)\n" ${cpu_alloc} ${cpu_avail} ${tot_cpu_pct})\n"
+  outp+="$(printf "RAM,%d of %d Gb,(%.2f%%)\n" ${mem_alloc} ${mem_avail} ${tot_mem_pct})\n"
+  outp+="$(printf "PODS,%d of %d pods,(%.2f%%)\n" ${pods_allocated} ${pods_capacity} ${pod_alloc_pct})\n"
+  
+  echo
+  echo "Total Cluster Utilization"
+  echo -e ${outp} | column -t -s ","
+}
+
+#
+# Functions
+#
+check_long_opts(){
+  local long_option="$1"
+  case ${long_option} in
+    help) show_help ;;
+    infra) opt_infra=true ;;
+    masters) opt_masters=true ;;
+    schedulable) opt_schedulable=true ;;
+    version) show_version ;;
+    workers) opt_workers=true ;;
+    *) show_error "\"--${long_option}\" is an invalid option" ;;
+  esac
+}
+show_version(){
+  echo "kutil version ${VERSION}"
+  echo "${COPYRIGHT}"
+  echo
+  echo "Contact: ${AUTHOR} <${EMAIL}>"
+  echo "Website: ${WEB}"
+  exit 0
+}
+show_help(){
+  echo "kutil version ${VERSION}"
+  echo "${PURPOSE}"
+  echo "${SUMMARY}"
+  echo
+  echo "Contact: ${AUTHOR} <${EMAIL}>"
+  echo "Website: ${WEB}"
+  exit 0
+}
+show_error(){
+  echo "$1" 1>&2
+  echo "${USAGE}"
+  echo "Try 'kutil --help' for more information."
+  exit 1
+}
+#
+# End functions
+#
+main $@
