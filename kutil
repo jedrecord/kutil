@@ -24,7 +24,7 @@
 
 NAME="kutil"
 PURPOSE="Display a summary of Kubernetes node and cluster resource utilization by memory, cpu, and pods"
-VERSION="0.8"
+VERSION="0.8.1"
 AUTHOR="Jed Record"
 EMAIL="jed@jedrecord.com"
 WEB="https://github.com/jedrecord/kutil"
