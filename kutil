@@ -34,21 +34,26 @@ This is free software; you are free to change and redistribute it.
 There is NO WARRANTY, to the extent permitted by law."
 USAGE="Usage: kutil [OPTIONS]"
 SUMMARY="${USAGE}
- Option            Meaning
- -h, --help        Show usage and options
- -i, --infra       Show only infra nodes
- -m, --masters     Show only master nodes
- -s, --schedulable Show only nodes which have not been tainted with NoSchedule
-                   This option will override other node selection arguments
- -v, --version     Print version info
- -w, --workers     Show only worker nodes
+ Option                    Meaning
+ -h, --help                Show usage and options
+ -i, --infra               Show only nodes labelled 'infra'
+ -l, --label LABEL[=VALUE] Show nodes with label and optional value
+ -m, --masters             Show only nodes labelled 'master'
+ -s, --schedulable         Show only nodes without a 'NoSchedule' taint
+ -v, --version             Print version info
+ -w, --workers             Show only nodes labelled as workers
  "
 main() {
-  while getopts ":-:himsvw" opt; do
+  label="node"
+  while getopts ":-:hil:msvw" opt; do
     case "$opt" in
-        -) check_long_opts "${OPTARG}"; shift ;;
+        -) long_opt="${OPTARG}"
+           shift $((OPTIND -1))
+           check_long_opts "${long_opt}" "$1" ;;
         h) show_help ;;
         i) opt_infra=true ;;
+        l) opt_label=true
+           label=${OPTARG} ;;
         m) opt_masters=true ;;
         s) opt_schedulable=true ;;
         v) show_version ;;
@@ -61,7 +66,11 @@ main() {
   shift $((OPTIND -1))
 
   declare -a all_nodes
-  if [[ $opt_schedulable == true ]]
+  if [[ $opt_label == true ]]
+  then
+    label=${label/=/:}
+    all_nodes=$(kubectl get nodes --no-headers -o custom-columns=NAME:.metadata.name,LABELS:.metadata.labels | awk -v label="\/${label}" '{n=$1;$1=""} $0 ~ label {print n}' 2>/dev/null)
+  elif [[ $opt_schedulable == true ]]
   then
     all_nodes=$(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.taints[?(@.effect=="NoSchedule")].effect}{"\n"}{end}'|grep -v NoSchedule 2>/dev/null)
   elif [[ $opt_infra == true || $opt_masters == true || $opt_workers == true ]]
@@ -72,52 +81,59 @@ main() {
     fi
     if [[ $opt_masters == true ]]
     then
-      all_nodes+=" $(kubectl get nodes --no-headers --selector=node-role.kubernetes.io/master -o custom-columns=NAME:.metadata.name 2>/dev/null)"
+      all_nodes="$(kubectl get nodes --no-headers -o custom-columns=NAME:.metadata.name,LABELS:.metadata.labels | awk -v pattern="node(-role)?\.kubernetes\.io\/(master|controlplane|etcd):" '{n=$1;$1=""} $0 ~ pattern {print n}' 2>/dev/null) ${all_nodes}"
     fi
     if [[ $opt_workers == true ]]
     then
-      all_nodes+=" $(kubectl get nodes --no-headers --selector=node-role.kubernetes.io/worker -o custom-columns=NAME:.metadata.name 2>/dev/null)"
+      all_nodes="$(kubectl get nodes --no-headers -o custom-columns=NAME:.metadata.name,LABELS:.metadata.labels | awk -v pattern="node(-role)?\.kubernetes\.io\/(compute|worker|minion):" '{n=$1;$1=""} $0 ~ pattern {print n}' 2>/dev/null) ${all_nodes}"
     fi
   else
     all_nodes=$(kubectl get nodes --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null)
   fi
 
-  if [[ ${all_nodes[0]} == "" ]]
+  empty='^\s+?$'
+  if [[ ${all_nodes} =~ ${empty} ]]
   then
     echo "No nodes match your selection criteria"
     exit 1
   fi
 
-  echo -e "NODE\t\tROLE\t\tCPU\tRAM\tPODS"
+  echo -e "NODE\t\tLABEL\t\tCPU\tRAM\tPODS"
 
+  declare -A seen
   for node in $all_nodes
   do
-    _kutil_requests=$(kubectl describe node ${node} | grep -A3 -E "\\s\sRequests" | tail -n2)
-    _kutil_percent_cpu=$(echo ${_kutil_requests} | awk -F "[()%]" '{print $2}')
-    _kutil_percent_mem=$(echo ${_kutil_requests} | awk -F "[()%]" '{print $8}')
-    _kutil_pods_running=$(kubectl describe node ${node} | awk '/Non-terminated Pods/ {match($3,/\(([0-9]+)/,n);print n[1]}')
-    _kutil_pods_cap=$(kubectl get node ${node} -o jsonpath={.status.capacity.pods})
-    _kutil_percent_pods=$((100 * _kutil_pods_running / _kutil_pods_cap))
-    _kutil_cores=$(kubectl get node ${node} -o jsonpath={.status.allocatable.cpu}|tr -d m)
-    _kutil_ram=$(kubectl get node ${node} -o jsonpath={.status.allocatable.memory}|numfmt --from=iec-i --to-unit=M)
-    _kutil_allocated_cpu=$(kubectl describe node ${node} | awk '/^  cpu/ {print $2}'|tr -d m)
-    _kutil_allocated_mem=$(kubectl describe node ${node} | awk '/^  memory/ {print $2}'|numfmt --from=iec-i --to-unit=M)
-    _kutil_role="$(kubectl describe node ${node}|grep Roles|awk '{print $2}')"
-
-    echo -e "${node}  \t${_kutil_role}  \t${_kutil_percent_cpu}%\t${_kutil_percent_mem}%\t${_kutil_percent_pods}%"
+    # Don't duplicate nodes
+    if [[ ${seen[$node]} -ne 1 ]]
+    then
+      _kutil_requests=$(kubectl describe node ${node} | grep -A3 -E "\\s\sRequests" | tail -n2)
+      _kutil_percent_cpu=$(echo ${_kutil_requests} | awk -F "[()%]" '{print $2}')
+      _kutil_percent_mem=$(echo ${_kutil_requests} | awk -F "[()%]" '{print $8}')
+      _kutil_pods_running=$(kubectl describe node ${node} | awk '/Non-terminated Pods/ {match($3,/\(([0-9]+)/,n);print n[1]}')
+      _kutil_pods_cap=$(kubectl get node ${node} -o jsonpath={.status.capacity.pods})
+      _kutil_percent_pods=$((100 * _kutil_pods_running / _kutil_pods_cap))
+      _kutil_cores=$(to_milli $(kubectl get node ${node} -o jsonpath={.status.allocatable.cpu}))
+      _kutil_ram=$(to_mb $(kubectl get node ${node} -o jsonpath={.status.allocatable.memory}))
+      _kutil_allocated_cpu=$(to_milli $(kubectl describe node ${node} | awk '/^  cpu/ {print $2}'))
+      _kutil_allocated_mem=$(to_mb $(kubectl describe node ${node} | awk '/^  memory/ {print $2}'))
+      _kutil_role="$(kubectl describe node ${node}|grep Roles|awk '{print $2}')"
   
-    node_count=$((node_count + 1))
-    pods_allocated=$((pods_allocated + _kutil_pods_running))
-    pods_capacity=$((pods_capacity + _kutil_pods_cap))
-    total_percent_cpu=$((total_percent_cpu + _kutil_percent_cpu))
-    total_percent_mem=$((total_percent_mem + _kutil_percent_mem))
-    cpu_avail=$((cpu_avail + _kutil_cores))
-    mem_avail=$((mem_avail + _kutil_ram))
-    cpu_alloc=$((cpu_alloc + _kutil_allocated_cpu / 1000))
-    mem_alloc=$((mem_alloc + _kutil_allocated_mem))
-
-    # Clear vars
-    unset $(compgen -v | grep "^_kutil_")
+      echo -e "${node}  \t${_kutil_role}  \t${_kutil_percent_cpu}%\t${_kutil_percent_mem}%\t${_kutil_percent_pods}%"
+    
+      node_count=$((node_count + 1))
+      pods_allocated=$((pods_allocated + _kutil_pods_running))
+      pods_capacity=$((pods_capacity + _kutil_pods_cap))
+      total_percent_cpu=$((total_percent_cpu + _kutil_percent_cpu))
+      total_percent_mem=$((total_percent_mem + _kutil_percent_mem))
+      cpu_avail=$((cpu_avail + _kutil_cores))
+      mem_avail=$((mem_avail + _kutil_ram))
+      cpu_alloc=$((cpu_alloc + _kutil_allocated_cpu / 1000))
+      mem_alloc=$((mem_alloc + _kutil_allocated_mem))
+  
+      # Clear vars
+      unset $(compgen -v | grep "^_kutil_")
+      seen[$node]=1
+    fi
   done
   
   avg_percent_cpu=$((total_percent_cpu / node_count))
@@ -131,7 +147,7 @@ main() {
   outp+="$(printf "PODS,%d of %d pods,(%.2f%%)\n" ${pods_allocated} ${pods_capacity} ${pod_alloc_pct})\n"
   
   echo
-  echo "Total Cluster Utilization"
+  echo "Total Utilization"
   echo -e ${outp} | column -t -s ","
 }
 
@@ -140,9 +156,12 @@ main() {
 #
 check_long_opts(){
   local long_option="$1"
+  local param="$2"
   case ${long_option} in
     help) show_help ;;
     infra) opt_infra=true ;;
+    label) opt_label=true
+           label="${param}" ;;
     masters) opt_masters=true ;;
     schedulable) opt_schedulable=true ;;
     version) show_version ;;
@@ -172,6 +191,24 @@ show_error(){
   echo "${USAGE}"
   echo "Try 'kutil --help' for more information."
   exit 1
+}
+to_milli() {
+  local n=$1
+  if [[ $n =~ m$ ]]
+  then
+    echo ${n%m}
+  else
+    echo $(( $n * 100 ))
+  fi
+}
+to_mb() {
+  local n=$1
+  if [[ $n =~ i$ ]]
+  then
+    echo $n | numfmt --from=iec-i --to-unit=M
+  else
+    echo $n | numfmt --from=iec --to-unit=M
+  fi
 }
 #
 # End functions
