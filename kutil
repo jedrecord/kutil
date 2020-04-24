@@ -113,9 +113,9 @@ main() {
       _kutil_pods_cap=$(kubectl get node ${node} -o jsonpath={.status.capacity.pods})
       _kutil_percent_pods=$((100 * _kutil_pods_running / _kutil_pods_cap))
       _kutil_cores=$(to_milli $(kubectl get node ${node} -o jsonpath={.status.allocatable.cpu}))
-      _kutil_ram=$(to_mb $(kubectl get node ${node} -o jsonpath={.status.allocatable.memory}))
+      _kutil_ram=$(to_kb $(kubectl get node ${node} -o jsonpath={.status.allocatable.memory}))
       _kutil_allocated_cpu=$(to_milli $(kubectl describe node ${node} | awk '/^  cpu/ {print $2}'))
-      _kutil_allocated_mem=$(to_mb $(kubectl describe node ${node} | awk '/^  memory/ {print $2}'))
+      _kutil_allocated_mem=$(to_kb $(kubectl describe node ${node} | awk '/^  memory/ {print $2}'))
       _kutil_role="$(kubectl describe node ${node}|grep Roles|awk '{print $2}')"
   
       echo -e "${node}  \t${_kutil_role}  \t${_kutil_percent_cpu}%\t${_kutil_percent_mem}%\t${_kutil_percent_pods}%"
@@ -127,7 +127,7 @@ main() {
       total_percent_mem=$((total_percent_mem + _kutil_percent_mem))
       cpu_avail=$((cpu_avail + _kutil_cores))
       mem_avail=$((mem_avail + _kutil_ram))
-      cpu_alloc=$((cpu_alloc + _kutil_allocated_cpu / 1000))
+      cpu_alloc=$((cpu_alloc + _kutil_allocated_cpu))
       mem_alloc=$((mem_alloc + _kutil_allocated_mem))
   
       # Clear vars
@@ -139,11 +139,11 @@ main() {
   avg_percent_cpu=$((total_percent_cpu / node_count))
   avg_percent_mem=$((total_percent_mem / node_count))
   pod_alloc_pct=$(awk -v a=${pods_allocated} -v b=${pods_capacity} 'BEGIN { print ( 100 * a / b ) }')
-  tot_cpu_pct=$(awk -v a=${cpu_alloc} -v b=${cpu_avail} 'BEGIN { print ( a / b ) }')
-  tot_mem_pct=$(awk -v a=${mem_alloc} -v b=${mem_avail} 'BEGIN { print ( a / b ) }')
+  tot_cpu_pct=$(awk -v a=${cpu_alloc} -v b=${cpu_avail} 'BEGIN { print ( 100 * a / b ) }')
+  tot_mem_pct=$(awk -v a=${mem_alloc} -v b=${mem_avail} 'BEGIN { print ( 100 * a / b ) }')
   
-  outp="$(printf "CPU,%d of %d millicpu,(%.2f%%)\n" ${cpu_alloc} ${cpu_avail} ${tot_cpu_pct})\n"
-  outp+="$(printf "RAM,%d of %d Gb,(%.2f%%)\n" ${mem_alloc} ${mem_avail} ${tot_mem_pct})\n"
+  outp="$(printf "CPU,%.1f of %.1f cores,(%.2f%%)\n" $(awk "BEGIN{print $cpu_alloc/1000}") $(awk "BEGIN{print $cpu_avail/1000}") ${tot_cpu_pct})\n"
+  outp+="$(printf "RAM,%d of %d Gb,(%.2f%%)\n" $(to_gb ${mem_alloc}) $(to_gb ${mem_avail}) ${tot_mem_pct})\n"
   outp+="$(printf "PODS,%d of %d pods,(%.2f%%)\n" ${pods_allocated} ${pods_capacity} ${pod_alloc_pct})\n"
   
   echo
@@ -201,14 +201,17 @@ to_milli() {
     echo $(( $n * 1000 ))
   fi
 }
-to_mb() {
+to_kb() {
   local n=$1
   if [[ $n =~ i$ ]]
   then
-    echo $n | numfmt --from=iec-i --to-unit=M
+    echo $n | numfmt --from=iec-i --to-unit=K
   else
-    echo $n | numfmt --from=iec --to-unit=M
+    echo $n | numfmt --from=iec --to-unit=K
   fi
+}
+to_gb() {
+  echo $1 | numfmt --from-unit=K --to-unit=G
 }
 #
 # End functions
