@@ -114,8 +114,8 @@ main() {
       _kutil_percent_pods=$((100 * _kutil_pods_running / _kutil_pods_cap))
       _kutil_cores=$(to_milli $(kubectl get node ${node} -o jsonpath={.status.allocatable.cpu}))
       _kutil_ram=$(to_kb $(kubectl get node ${node} -o jsonpath={.status.allocatable.memory}))
-      _kutil_allocated_cpu=$(to_milli $(kubectl describe node ${node} | awk '/^  cpu/ {print $2}'))
-      _kutil_allocated_mem=$(to_kb $(kubectl describe node ${node} | awk '/^  memory/ {print $2}'))
+      _kutil_allocated_cpu=$(to_milli $(kubectl describe node ${node} | awk '/^  cpu / {print $2}'))
+      _kutil_allocated_mem=$(to_kb $(kubectl describe node ${node} | awk '/^  memory / {print $2}'))
       _kutil_role="$(kubectl describe node ${node}|grep Roles|awk '{print $2}')"
   
       echo -e "${node}  \t${_kutil_role}  \t${_kutil_percent_cpu}%\t${_kutil_percent_mem}%\t${_kutil_percent_pods}%"
