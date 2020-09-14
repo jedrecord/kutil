@@ -43,6 +43,8 @@ SUMMARY="${USAGE}
  -v, --version             Print version info
  -w, --workers             Show only nodes labelled as workers
  "
+NAME_PADDING_CHARS=25
+
 main() {
   label="node"
   while getopts ":-:hil:msvw" opt; do
@@ -98,7 +100,8 @@ main() {
     exit 1
   fi
 
-  echo -e "NODE\t\tLABEL\t\tCPU\tRAM\tPODS"
+  local nodelabel="$(namepad NODE)"
+  echo -e "${nodelabel} LABEL\t\tCPU\tRAM\tPODS"
 
   declare -A seen
   for node in $all_nodes
@@ -118,7 +121,8 @@ main() {
       _kutil_allocated_mem=$(to_kb $(kubectl describe node ${node} | awk '/^  memory / {print $2}'))
       _kutil_role="$(kubectl describe node ${node}|grep Roles|awk '{print $2}')"
   
-      echo -e "${node}  \t${_kutil_role}  \t${_kutil_percent_cpu}%\t${_kutil_percent_mem}%\t${_kutil_percent_pods}%"
+      local nodename="$(namepad ${node})"
+      echo -e "${nodename} ${_kutil_role}  \t${_kutil_percent_cpu}%\t${_kutil_percent_mem}%\t${_kutil_percent_pods}%"
     
       node_count=$((node_count + 1))
       pods_allocated=$((pods_allocated + _kutil_pods_running))
@@ -148,7 +152,7 @@ main() {
   
   echo
   echo "Total Utilization"
-  echo -e ${outp} | column -t -s ","
+  echo -e ${outp} | column -t -s "," -o "    "
 }
 
 #
@@ -212,6 +216,10 @@ to_kb() {
 }
 to_gb() {
   echo $1 | numfmt --from-unit=K --to-unit=G
+}
+namepad() {
+  local name="$1"
+  printf '%s%*s' "${name}" $((${NAME_PADDING_CHARS} - ${#name})) " "
 }
 #
 # End functions
