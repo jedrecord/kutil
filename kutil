@@ -1,5 +1,21 @@
 #!/bin/env bash
 #
+
+#*************************************************************************
+#
+# WARNING! THIS VERSION IS DEPRECIATED
+#
+# Please download the latest version from:
+#     https://github.com/jedrecord/kutil/releases
+#
+# This shell script is just a hacked wrapper around kubectl commands.
+# It is slow and innefficient.
+# I've updated the reposiory with a newer version which uses the native
+# Kubernetes API in go. I highly recommend using the binary version for
+# your platform.
+#
+#*************************************************************************
+
 #  kutil - Display a summary of Kubernetes node and cluster resource utilization by memory, cpu, and pods
 #
 #  Author:   Jed Record <jed@jedrecord.com>
