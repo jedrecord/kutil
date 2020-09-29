@@ -22,7 +22,14 @@ package utils
 
 import (
 	"fmt"
+	"os"
 )
+
+// LogError Error logging
+func LogError(msg string) {
+	fmt.Printf("Error: %s\n", msg)
+	os.Exit(1)
+}
 
 // CalcPct Calculate percentage of a resource
 func CalcPct(avail int64, inuse int64) int64 {

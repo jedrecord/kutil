@@ -22,8 +22,17 @@ package resources
 
 import (
 	"fmt"
+	"strings"
+
 	"github.com/jedrecord/kutil/pkg/utils"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 )
+
+/*
+TODO: Only export clustermetrics constructor, load, and print functions
+	No need to export anything else now that they are all in the same package
+*/
 
 // Restat A resource statistic to measure
 type Restat struct {
@@ -84,6 +93,150 @@ func NewNodemetrics() *Nodemetrics {
 func NewNsmetrics() *Nsmetrics {
 	var n Nsmetrics
 	return &n
+}
+
+// Load Retrieve kubernetes resource data into the Clustermetrics object
+func (c *Clustermetrics) Load(cs *kubernetes.Clientset) {
+	// Retrieve a list of nodes from the cluster as type nodelist
+	mynodes, err := cs.CoreV1().Nodes().List(metav1.ListOptions{})
+	if err != nil {
+		utils.LogError("There was a problem connecting with the API")
+	}
+	// Loop through the nodes to collect utilization data
+	if len(mynodes.Items) > 0 {
+		//fmt.Printf("NODE\t\tLABEL\t\t\tCPU\t\tRAM\t\tPODS\n")
+		for _, mynode := range mynodes.Items {
+			n := mynode.Name
+			var role string
+			for label := range mynode.Labels {
+				pair := strings.Split(label, "/")
+				multirole := false
+				if pair[0] == "node-role.kubernetes.io" {
+					if multirole {
+						role = role + ","
+					}
+					role = role + pair[1]
+					multirole = true
+				}
+			}
+			ndata := NewNodemetrics()
+			ndata.Label = role
+			ndata.Sched = true
+			ndata.Status = "Ready"
+			cpuAvail := mynode.Status.Allocatable["cpu"]
+			memAvail := mynode.Status.Allocatable["memory"]
+			podsAvail := mynode.Status.Allocatable["pods"]
+			ndata.Cpu.Avail = cpuAvail.MilliValue()
+			ndata.Mem.Avail = memAvail.Value()
+			ndata.Pods.Avail = podsAvail.Value()
+			c.UpdateNode(n, ndata)
+			c.Cpu.Avail += cpuAvail.MilliValue()
+			c.Mem.Avail += memAvail.Value()
+			c.Pods.Avail += podsAvail.Value()
+		}
+	} else {
+		utils.LogError("No nodes discovered")
+	}
+
+	// Retrieve a list of pods from the cluster as type podlist
+	mypods, err := cs.CoreV1().Pods("").List(metav1.ListOptions{})
+	if err != nil {
+		utils.LogError("There was a problem connecting with the API")
+	}
+	if len(mypods.Items) > 0 {
+		// Loop through the pods to collect utilization data
+		for _, mypod := range mypods.Items {
+			ns := mypod.Namespace
+			no := mypod.Spec.NodeName
+
+			// Initialize namespace and node data structs to hold the data
+			nsdata := NewNsmetrics()
+			ndata := NewNodemetrics()
+
+			// slice to hold the names of active containers in each pod
+			var activeContainers []string
+
+			// Loop through the status of each container in the pod
+			// We want to collect metrics from live containers only
+			for _, cons := range mypod.Status.ContainerStatuses {
+				if cons.Ready == true {
+					activeContainers = append(activeContainers, cons.Name)
+				}
+			}
+			// Loop through the container specs to collect cpu/memory requests and limits
+			for _, con := range mypod.Spec.Containers {
+				ok := false
+				// Make sure this is an active container
+				for _, a := range activeContainers {
+					if a == con.Name {
+						ok = true
+					}
+				}
+				if ok {
+					cpuReq := con.Resources.Requests["cpu"]
+					cpuLim := con.Resources.Limits["cpu"]
+					memReq := con.Resources.Requests["memory"]
+					memLim := con.Resources.Limits["memory"]
+					nsdata.Cpu.Req += cpuReq.MilliValue()
+					nsdata.Cpu.Limit += cpuLim.MilliValue()
+					nsdata.Mem.Req += memReq.Value()
+					nsdata.Mem.Limit += memLim.Value()
+					ndata.Cpu.Req += cpuReq.MilliValue()
+					ndata.Cpu.Limit += cpuLim.MilliValue()
+					ndata.Mem.Req += memReq.Value()
+					ndata.Mem.Req += memLim.Value()
+					c.Cpu.Req += cpuReq.MilliValue()
+					c.Cpu.Limit += cpuLim.MilliValue()
+					c.Mem.Req += memReq.Value()
+					c.Mem.Limit += memLim.Value()
+				}
+			}
+			// If we've got at least 1 active container, add this pod to our pod stats
+			if len(activeContainers) > 0 {
+				nsdata.Pods.Inuse++
+				ndata.Pods.Inuse++
+				c.Pods.Inuse++
+			}
+			// These update functions take the structs we just collected and update
+			// the clustermetrics object (which is also as struct)
+			c.UpdateNamespace(ns, nsdata)
+			c.UpdateNode(no, ndata)
+		}
+	} else {
+		utils.LogError("No pods discovered")
+	}
+
+	// Calculate totals for namespaces
+	for n, m := range c.Namespaces {
+		nsdata := NewNsmetrics()
+		cu := utils.CalcPct(c.Cpu.Avail, m.Cpu.Req)
+		mu := utils.CalcPct(c.Mem.Avail, m.Mem.Req)
+		pu := utils.CalcPct(c.Pods.Avail, m.Pods.Inuse)
+		nsdata.Cpu.Util = cu
+		nsdata.Mem.Util = mu
+		nsdata.Pods.Util = pu
+		c.UpdateNamespace(n, nsdata)
+	}
+
+	// Calculate totals for nodes
+	for n, m := range c.Nodes {
+		ndata := NewNodemetrics()
+		cu := utils.CalcPct(m.Cpu.Avail, m.Cpu.Req)
+		mu := utils.CalcPct(m.Mem.Avail, m.Mem.Req)
+		pu := utils.CalcPct(m.Pods.Avail, m.Pods.Inuse)
+		ndata.Cpu.Util = cu
+		ndata.Mem.Util = mu
+		ndata.Pods.Util = pu
+		c.UpdateNode(n, ndata)
+	}
+
+	// Calculate totals for the cluster
+	cu := utils.CalcPct(c.Cpu.Avail, c.Cpu.Req)
+	mu := utils.CalcPct(c.Mem.Avail, c.Mem.Req)
+	pu := utils.CalcPct(c.Pods.Avail, c.Pods.Inuse)
+	c.Cpu.Util = cu
+	c.Mem.Util = mu
+	c.Pods.Util = pu
 }
 
 // UpdateNamespace Adder for the Namespaces
