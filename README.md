@@ -22,10 +22,6 @@ sudo mv kutil /usr/bin/kutil && sudo chmod 755 /usr/bin/kutil
 
 or with go get:
 GO111MODULE=on go get github.com/jedrecord/kutil/cmd/kutil
-
-or for the depreciated shell script:
-sudo curl -s https://raw.githubusercontent.com/jedrecord/kutil/master/kutil \
-  -o /usr/bin/kutil && sudo chmod 755 /usr/bin/kutil
 ```
 
 ## Source

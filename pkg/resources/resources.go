@@ -29,16 +29,12 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-/*
-TODO: Only export clustermetrics constructor, load, and print functions
-	No need to export anything else now that they are all in the same package
-*/
-
 // Restat A resource statistic to measure
 type Restat struct {
 	Req   int64
 	Limit int64
 	Avail int64
+	Cap   int64
 	Util  int64
 }
 
@@ -47,6 +43,7 @@ type Nodemetrics struct {
 	Sched  bool
 	Label  string
 	Status string
+	Taints string
 	Cpu    Restat
 	Mem    Restat
 	Pods   Imetric
@@ -72,6 +69,7 @@ type Clustermetrics struct {
 type Imetric struct {
 	Inuse int64
 	Avail int64
+	Cap   int64
 	Util  int64
 }
 
@@ -104,35 +102,78 @@ func (c *Clustermetrics) Load(cs *kubernetes.Clientset) {
 	}
 	// Loop through the nodes to collect utilization data
 	if len(mynodes.Items) > 0 {
-		//fmt.Printf("NODE\t\tLABEL\t\t\tCPU\t\tRAM\t\tPODS\n")
+		// Node loop - Begin collecting node data
 		for _, mynode := range mynodes.Items {
 			n := mynode.Name
+			// Loop over labels and assign node role
 			var role string
 			for label := range mynode.Labels {
 				pair := strings.Split(label, "/")
-				multirole := false
+				// Get the node-role (ie: master, worker, infra) if available
 				if pair[0] == "node-role.kubernetes.io" {
-					if multirole {
+					if len(role) > 0 {
 						role = role + ","
 					}
 					role = role + pair[1]
-					multirole = true
+				}
+			}
+			// Loop over spec.taints["effect"] = "NoSchedule"
+			var nodetaint string
+			var nodesched bool = true
+			for _, t := range mynode.Spec.Taints {
+				tkey := strings.Split(t.Key, "/")
+				if tkey[0] == "node-role.kubernetes.io" || tkey[0] == "node.kubernetes.io" {
+					if len(nodetaint) > 0 {
+						nodetaint = nodetaint + ","
+					}
+					// Ommitting redundant taintlabel "master" on master nodes
+					if tkey[1] == "master" {
+						nodetaint = nodetaint + string(t.Effect)
+					} else {
+						nodetaint = nodetaint + tkey[1] + ":" + string(t.Effect)
+					}
+				}
+				if t.Effect == "NoSchedule" || t.Effect == "NoExecute" {
+					nodesched = false
+				}
+			}
+			// Loop over status.conditions
+			var nstatus string
+			for _, cond := range mynode.Status.Conditions {
+				if cond.Status == "True" {
+					if len(nstatus) > 0 {
+						nstatus = nstatus + ","
+					}
+					nstatus = nstatus + string(cond.Type)
 				}
 			}
 			ndata := NewNodemetrics()
 			ndata.Label = role
-			ndata.Sched = true
-			ndata.Status = "Ready"
+			ndata.Taints = nodetaint
+			ndata.Sched = nodesched
+			ndata.Status = nstatus
 			cpuAvail := mynode.Status.Allocatable["cpu"]
 			memAvail := mynode.Status.Allocatable["memory"]
 			podsAvail := mynode.Status.Allocatable["pods"]
+			cpuCap := mynode.Status.Capacity["cpu"]
+			memCap := mynode.Status.Capacity["memory"]
+			podsCap := mynode.Status.Capacity["pods"]
 			ndata.Cpu.Avail = cpuAvail.MilliValue()
 			ndata.Mem.Avail = memAvail.Value()
 			ndata.Pods.Avail = podsAvail.Value()
+			ndata.Cpu.Cap = cpuCap.MilliValue()
+			ndata.Mem.Cap = memCap.Value()
+			ndata.Pods.Cap = podsCap.Value()
 			c.UpdateNode(n, ndata)
-			c.Cpu.Avail += cpuAvail.MilliValue()
-			c.Mem.Avail += memAvail.Value()
-			c.Pods.Avail += podsAvail.Value()
+			c.Cpu.Cap += cpuCap.MilliValue()
+			c.Mem.Cap += memCap.Value()
+			c.Pods.Cap += podsCap.Value()
+			// Don't increase aggregate cluster resources if this node is unschedualable
+			if nodesched {
+				c.Cpu.Avail += cpuAvail.MilliValue()
+				c.Mem.Avail += memAvail.Value()
+				c.Pods.Avail += podsAvail.Value()
+			}
 		}
 	} else {
 		utils.LogError("No nodes discovered")
@@ -189,6 +230,10 @@ func (c *Clustermetrics) Load(cs *kubernetes.Clientset) {
 					c.Cpu.Limit += cpuLim.MilliValue()
 					c.Mem.Req += memReq.Value()
 					c.Mem.Limit += memLim.Value()
+					if c.Nodes[no].Sched == false {
+						c.Cpu.Avail += cpuReq.MilliValue()
+						c.Mem.Avail += memReq.Value()
+					}
 				}
 			}
 			// If we've got at least 1 active container, add this pod to our pod stats
@@ -196,6 +241,9 @@ func (c *Clustermetrics) Load(cs *kubernetes.Clientset) {
 				nsdata.Pods.Inuse++
 				ndata.Pods.Inuse++
 				c.Pods.Inuse++
+				if c.Nodes[no].Sched == false {
+					c.Pods.Avail++
+				}
 			}
 			// These update functions take the structs we just collected and update
 			// the clustermetrics object (which is also as struct)
@@ -264,19 +312,25 @@ func (c *Clustermetrics) UpdateNamespace(name string, metrics *Nsmetrics) {
 // UpdateNode Adder for the Nodes
 func (c *Clustermetrics) UpdateNode(name string, metrics *Nodemetrics) {
 	if met, ok := c.Nodes[name]; ok {
+
+		// Node metrics incrementally updated by looping through pods
 		met.Cpu.Req += metrics.Cpu.Req
 		met.Cpu.Limit += metrics.Cpu.Limit
-		met.Cpu.Avail += metrics.Cpu.Avail
 		met.Mem.Req += metrics.Mem.Req
 		met.Mem.Limit += metrics.Mem.Limit
-		met.Mem.Avail += metrics.Mem.Avail
 		met.Pods.Inuse += metrics.Pods.Inuse
-		met.Sched = metrics.Sched
+
+		// Node metrics set when looping through nodes
+		met.Cpu.Avail += metrics.Cpu.Avail
+		met.Cpu.Cap += metrics.Cpu.Cap
+		met.Mem.Avail += metrics.Mem.Avail
+		met.Mem.Cap += metrics.Mem.Cap
 		if len(metrics.Label) > 0 {
 			met.Label = metrics.Label
 		}
 		if len(metrics.Status) > 0 {
 			met.Status = metrics.Label
+			met.Sched = metrics.Sched
 		}
 		if metrics.Cpu.Util > 0 {
 			met.Cpu.Util = metrics.Cpu.Util
@@ -286,6 +340,9 @@ func (c *Clustermetrics) UpdateNode(name string, metrics *Nodemetrics) {
 		}
 		if metrics.Pods.Avail > 0 {
 			met.Pods.Avail = metrics.Pods.Avail
+		}
+		if metrics.Pods.Cap > 0 {
+			met.Pods.Cap = metrics.Pods.Cap
 		}
 		if metrics.Pods.Util > 0 {
 			met.Pods.Util = metrics.Pods.Util
@@ -311,6 +368,10 @@ func (c *Clustermetrics) maxW(field string, min int) int {
 		for _, m := range c.Nodes {
 			w = utils.MaxInt(w, len(m.Label))
 		}
+	case "taints":
+		for _, m := range c.Nodes {
+			w = utils.MaxInt(w, len(m.Taints))
+		}
 	case "namespace":
 		for n := range c.Namespaces {
 			w = utils.MaxInt(w, len(n))
@@ -323,10 +384,11 @@ func (c *Clustermetrics) maxW(field string, min int) int {
 func (c *Clustermetrics) PrintNodeSummary() {
 	nw := c.maxW("name", 4)
 	sw := c.maxW("status", 6)
+	tw := c.maxW("taints", 6)
 	lw := c.maxW("label", 5)
-	fmt.Printf("%-*s  %-*s  %-*s  %s  %s  %s\n", nw, "NODE", sw, "STATUS", lw, "LABEL", "CPU REQ", "MEM REQ", "PODS")
+	fmt.Printf("%-*s  %-*s  %-*s  %-*s  %s  %s  %s\n", nw, "NODE", sw, "STATUS", lw, "LABEL", tw, "TAINTS", "CPU REQ", "MEM REQ", "PODS")
 	for name, n := range c.Nodes {
-		fmt.Printf("%-*v  %-*v  %-*v  %-7v  %-7v  %v\n", nw, name, sw, n.Status, lw, n.Label, utils.FmtPct(n.Cpu.Util), utils.FmtPct(n.Mem.Util), utils.FmtPct(n.Pods.Util))
+		fmt.Printf("%-*v  %-*v  %-*s  %-*v  %-7v  %-7v  %v\n", nw, name, sw, n.Status, lw, n.Label, tw, n.Taints, utils.FmtPct(n.Cpu.Util), utils.FmtPct(n.Mem.Util), utils.FmtPct(n.Pods.Util))
 	}
 }
 
@@ -343,10 +405,12 @@ func (c *Clustermetrics) PrintNamespaceSummary() {
 func (c *Clustermetrics) PrintClusterSummary() {
 	memreq := utils.FmtGiB(c.Mem.Req)
 	memavail := utils.FmtGiB(c.Mem.Avail)
+	memcap := utils.FmtGiB(c.Mem.Cap)
 	cpureq := utils.FmtCPU(c.Cpu.Req)
 	cpuavail := utils.FmtCPU(c.Cpu.Avail)
-	fmt.Printf("%-17s  %-10s %-10s %s\n", "CLUSTER RESOURCES", "REQUESTED", "AVAILABLE", "UTIL")
-	fmt.Printf("%-17s  %-10v %-10v %s\n", "CPU", cpureq, cpuavail, utils.FmtPct(c.Cpu.Util))
-	fmt.Printf("%-17s  %-10v %-10v %s\n", "MEMORY", memreq, memavail, utils.FmtPct(c.Mem.Util))
-	fmt.Printf("%-17v  %-10v %-10v %v\n", "PODS", c.Pods.Inuse, c.Pods.Avail, utils.FmtPct(c.Pods.Util))
+	cpucap := utils.FmtCPU(c.Cpu.Cap)
+	fmt.Printf("%-17s  %-10s %-10s %-10s %s\n", "CLUSTER RESOURCES", "REQUESTED", "AVAILABLE", "CAPACITY", "UTIL")
+	fmt.Printf("%-17s  %-10v %-10v %-10v %s\n", "CPU", cpureq, cpuavail, cpucap, utils.FmtPct(c.Cpu.Util))
+	fmt.Printf("%-17s  %-10v %-10v %-10v %s\n", "MEMORY", memreq, memavail, memcap, utils.FmtPct(c.Mem.Util))
+	fmt.Printf("%-17v  %-10v %-10v %-10v %v\n", "PODS", c.Pods.Inuse, c.Pods.Avail, c.Pods.Cap, utils.FmtPct(c.Pods.Util))
 }
