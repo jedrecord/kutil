@@ -16,9 +16,14 @@ Display a summary of Kubernetes node, namespace, and cluster resource utilizatio
 
 ## Installation
 ```
+To install the latest pre-built binary for linux:
 wget https://github.com/jedrecord/kutil/releases/latest/download/kutil-linux-amd64.tar.gz \
   && tar xvf kutil-linux-amd64.tar.gz
 sudo mv kutil /usr/bin/kutil && sudo chmod 755 /usr/bin/kutil
+
+To install from source (requires Go)
+make build
+sudo make install
 
 or with go get:
 GO111MODULE=on go get github.com/jedrecord/kutil/cmd/kutil

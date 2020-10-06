@@ -388,7 +388,9 @@ func (c *Clustermetrics) PrintNodeSummary() {
 	lw := c.maxW("label", 5)
 	fmt.Printf("%-*s  %-*s  %-*s  %-*s  %s  %s  %s\n", nw, "NODE", sw, "STATUS", lw, "LABEL", tw, "TAINTS", "CPU REQ", "MEM REQ", "PODS")
 	for name, n := range c.Nodes {
-		fmt.Printf("%-*v  %-*v  %-*s  %-*v  %-7v  %-7v  %v\n", nw, name, sw, n.Status, lw, n.Label, tw, n.Taints, utils.FmtPct(n.Cpu.Util), utils.FmtPct(n.Mem.Util), utils.FmtPct(n.Pods.Util))
+		if name != "" {
+			fmt.Printf("%-*v  %-*v  %-*s  %-*v  %-7v  %-7v  %v\n", nw, name, sw, n.Status, lw, n.Label, tw, n.Taints, utils.FmtPct(n.Cpu.Util), utils.FmtPct(n.Mem.Util), utils.FmtPct(n.Pods.Util))
+		}
 	}
 }
 
@@ -397,7 +399,9 @@ func (c *Clustermetrics) PrintNamespaceSummary() {
 	nsw := c.maxW("namespace", 9)
 	fmt.Printf("%-*s  %-7s  %-4s  %-9s  %-4s  %-4s  %s\n", nsw, "NAMESPACE", "CPU REQ", "UTIL", "MEM REQ", "UTIL", "PODS", "UTIL")
 	for name, n := range c.Namespaces {
-		fmt.Printf("%-*v  %-7v  %-4v  %-9v  %-4v  %-4v  %v\n", nsw, name, utils.FmtMilli(n.Cpu.Req), utils.FmtPct(n.Cpu.Util), utils.FmtMiB(n.Mem.Req), utils.FmtPct(n.Mem.Util), (n.Pods.Inuse), utils.FmtPct(n.Pods.Util))
+		if name != "" {
+			fmt.Printf("%-*v  %-7v  %-4v  %-9v  %-4v  %-4v  %v\n", nsw, name, utils.FmtMilli(n.Cpu.Req), utils.FmtPct(n.Cpu.Util), utils.FmtMiB(n.Mem.Req), utils.FmtPct(n.Mem.Util), (n.Pods.Inuse), utils.FmtPct(n.Pods.Util))
+		}
 	}
 }
 
