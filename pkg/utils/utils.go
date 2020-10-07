@@ -57,7 +57,7 @@ func FmtMilli(i int64) string {
 	return fmt.Sprintf("%vm", i)
 }
 
-// FmtMem Convert byte values to Tebibyte (Ti) Gibibyte (Gi) or Mebibyte (Mi)
+// FmtMem Convert byte values to Tebibyte (TiB) Gibibyte (GiB) or Mebibyte (MiB)
 func FmtMem(i int64) string {
 	// Storing precision in var p
 	var p int = 0
@@ -68,7 +68,7 @@ func FmtMem(i int64) string {
 		if r[len(r)-1:] != "0" {
 			p = 1
 		}
-		return fmt.Sprintf("%.*f Ti", p, float64(i)/1024/1024/1024)
+		return fmt.Sprintf("%.*f TiB", p, float64(i)/1024/1024/1024)
 	// If our number has an integer value when converted to GiB, use GiB
 	} else if i/1024/1024/1024 > 0 {
 		// If single precision ends with "0" use precision 0. Otherwise show 1 decimal point precision
@@ -76,10 +76,10 @@ func FmtMem(i int64) string {
 		if r[len(r)-1:] != "0" {
 			p = 1
 		}
-		return fmt.Sprintf("%.*f Gi", p, float64(i)/1024/1024/1024)
+		return fmt.Sprintf("%.*f GiB", p, float64(i)/1024/1024/1024)
 	}
 	// No integer value as GiB, use MiB
-	return fmt.Sprintf("%.f Mi", float64(i)/1024/1024)
+	return fmt.Sprintf("%.f MiB", float64(i)/1024/1024)
 }
 
 // FmtPct Convert an int64 to string percentage
