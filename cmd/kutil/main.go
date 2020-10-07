@@ -32,7 +32,7 @@ import (
 )
 
 func showVersion() {
-	fmt.Println("kutil version 0.9.2")
+	fmt.Println("kutil version 0.9.3")
 	fmt.Println("Copyright (C) 2020 Jed Record")
 	fmt.Println("License GNU GPL version 2 <https://gnu.org/licenses/gpl-2.0.html>")
 	fmt.Println("This is free software; you are free to change and redistribute it.")
