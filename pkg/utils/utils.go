@@ -42,12 +42,34 @@ func CalcPct(avail int64, inuse int64) int64 {
 
 // FmtCPU Converts Milli CPU values to fractions of CPU threads
 func FmtCPU(i int64) string {
-	return fmt.Sprintf("%.1f vCPU", float64(i)/1000)
+	// Storing precision in var p
+	var p int = 0
+	// If non-fraction, use precision 0. Otherwise show 1 decimal point precision
+	r := fmt.Sprintf("%.1f", float64(i)/1000)
+	if r[len(r)-1:] != "0" {
+		p = 1
+	}
+	return fmt.Sprintf("%.*f vCPU", p, float64(i)/1000)
 }
 
 // FmtMilli Append 'm' to for Milli CPU values
 func FmtMilli(i int64) string {
 	return fmt.Sprintf("%vm", i)
+}
+
+// FmtMem Convert Kibibyte (Ki) values to Gibibyte (GiB) or Mebibyte (MiB)
+func FmtMem(i int64) string {
+	// Storing precision in var p
+	var p int = 0
+	// If mem is an even GiB, use precision 0. Otherwise show 1 decimal point precision
+	r := fmt.Sprintf("%.1f", float64(i)/1024/1024/1024)
+	if r[len(r)-1:] != "0" {
+		p = 1
+	}
+	if i/1024/1024/1024 > 0 {
+		return fmt.Sprintf("%.*f GiB", p, float64(i)/1024/1024/1024)
+	}
+	return fmt.Sprintf("%.f MiB", float64(i)/1024/1024)
 }
 
 // FmtGiB Convert Kibibyte (Ki) values to Gibibyte (GiB)

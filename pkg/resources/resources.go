@@ -23,6 +23,7 @@ package resources
 import (
 	"fmt"
 	"strings"
+	"sort"
 
 	"github.com/jedrecord/kutil/pkg/utils"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -40,10 +41,10 @@ type Restat struct {
 
 // Nodemetrics Node resource metrics
 type Nodemetrics struct {
+	Taints []string
 	Sched  bool
 	Label  string
 	Status string
-	Taints string
 	Cpu    Restat
 	Mem    Restat
 	Pods   Imetric
@@ -60,6 +61,7 @@ type Nsmetrics struct {
 type Clustermetrics struct {
 	Namespaces map[string]*Nsmetrics
 	Nodes      map[string]*Nodemetrics
+	TaintLen   int
 	Cpu        Restat
 	Mem        Restat
 	Pods       Imetric
@@ -118,20 +120,15 @@ func (c *Clustermetrics) Load(cs *kubernetes.Clientset) {
 				}
 			}
 			// Loop over spec.taints["effect"] = "NoSchedule"
-			var nodetaint string
+			var nodetaints []string
+			var taintlen int = 0
 			var nodesched bool = true
 			for _, t := range mynode.Spec.Taints {
 				tkey := strings.Split(t.Key, "/")
 				if tkey[0] == "node-role.kubernetes.io" || tkey[0] == "node.kubernetes.io" {
-					if len(nodetaint) > 0 {
-						nodetaint = nodetaint + ","
-					}
-					// Ommitting redundant taintlabel "master" on master nodes
-					if tkey[1] == "master" {
-						nodetaint = nodetaint + string(t.Effect)
-					} else {
-						nodetaint = nodetaint + tkey[1] + ":" + string(t.Effect)
-					}
+					s := tkey[1] + ":" + string(t.Effect)
+					nodetaints = append(nodetaints, s)
+					taintlen = utils.MaxInt(taintlen, len(s))
 				}
 				if t.Effect == "NoSchedule" || t.Effect == "NoExecute" {
 					nodesched = false
@@ -148,8 +145,10 @@ func (c *Clustermetrics) Load(cs *kubernetes.Clientset) {
 				}
 			}
 			ndata := NewNodemetrics()
+			for _, taint := range nodetaints {
+				ndata.Taints = append(ndata.Taints, taint)
+			}
 			ndata.Label = role
-			ndata.Taints = nodetaint
 			ndata.Sched = nodesched
 			ndata.Status = nstatus
 			cpuAvail := mynode.Status.Allocatable["cpu"]
@@ -168,6 +167,7 @@ func (c *Clustermetrics) Load(cs *kubernetes.Clientset) {
 			c.Cpu.Cap += cpuCap.MilliValue()
 			c.Mem.Cap += memCap.Value()
 			c.Pods.Cap += podsCap.Value()
+			c.TaintLen = utils.MaxInt(c.TaintLen, taintlen)
 			// Don't increase aggregate cluster resources if this node is unschedualable
 			if nodesched {
 				c.Cpu.Avail += cpuAvail.MilliValue()
@@ -382,39 +382,89 @@ func (c *Clustermetrics) maxW(field string, min int) int {
 
 // PrintNodeSummary Print utilization summary of each node in the cluster
 func (c *Clustermetrics) PrintNodeSummary() {
+	// Store the length of the longest value in each column
 	nw := c.maxW("name", 4)
 	sw := c.maxW("status", 6)
-	tw := c.maxW("taints", 6)
 	lw := c.maxW("label", 5)
+	tw := utils.MaxInt(c.TaintLen, 6)
+
+	// Use the '*' modifier for Printf to pad each column to the length of the longest value
 	fmt.Printf("%-*s  %-*s  %-*s  %-*s  %s  %s  %s\n", nw, "NODE", sw, "STATUS", lw, "LABEL", tw, "TAINTS", "CPU REQ", "MEM REQ", "PODS")
-	for name, n := range c.Nodes {
+
+	// Create a slice to hold the node names for sorting
+	var s []string
+	for n := range c.Nodes {
+		s = append(s, n)
+	}
+	// Sort node names alphabetically
+	sort.Strings(s)
+
+	// Loop through each node alphabetically
+	for _, name := range s {
 		if name != "" {
-			fmt.Printf("%-*v  %-*v  %-*s  %-*v  %-7v  %-7v  %v\n", nw, name, sw, n.Status, lw, n.Label, tw, n.Taints, utils.FmtPct(n.Cpu.Util), utils.FmtPct(n.Mem.Util), utils.FmtPct(n.Pods.Util))
+			var n *Nodemetrics = c.Nodes[name]
+
+			// Sort the taints alphabetically (TODO: sort by master taints first?)
+			sort.Strings(n.Taints)
+
+			// If taints on the node are found, print the first with the rest of the node data
+			// Print each addtional taint on a new line with commas separating them
+			firstTaint := ""
+			if len(n.Taints) > 0 {
+				firstTaint = n.Taints[0]
+			}
+			if len(n.Taints) > 1 {
+				firstTaint += ","
+			}
+			// Use the '*' modifier again to pad each column for consistent spacing
+			fmt.Printf("%-*v  %-*v  %-*s  %-*s  %-7v  %-7v  %v\n", nw, name, sw, n.Status, lw, n.Label, tw, firstTaint, utils.FmtPct(n.Cpu.Util), utils.FmtPct(n.Mem.Util), utils.FmtPct(n.Pods.Util))
+
+			// If there are multiple taints, print them on a line by themselves in the same column
+			for i := 1; i < len(n.Taints); i++ {
+				s := ""
+				t := n.Taints[i]
+				if (i + 1) < len(n.Taints) {
+					t += ","
+				}
+				fmt.Printf("%-*s  %-*s  %-*s  %-*s  %-7s  %-7s  %s\n", nw, s, sw, s, lw, s, tw, t, s, s, s)
+			}
 		}
 	}
 }
 
 // PrintNamespaceSummary Print utilization summary of each namespace in the cluster
 func (c *Clustermetrics) PrintNamespaceSummary() {
+	// Store the length of the longest namespace for column padding
 	nsw := c.maxW("namespace", 9)
 	fmt.Printf("%-*s  %-7s  %-4s  %-9s  %-4s  %-4s  %s\n", nsw, "NAMESPACE", "CPU REQ", "UTIL", "MEM REQ", "UTIL", "PODS", "UTIL")
-	for name, n := range c.Namespaces {
+
+	// Create a slice to hold the names for sorting
+	var s []string
+	for n := range c.Namespaces {
+		s = append(s, n)
+	}
+	// Sort namespaces alphabetically
+	sort.Strings(s)
+
+	// Print a formatted list of namespace resource data sorted by namespace alphabetically
+	for _, name := range s {
+		var n *Nsmetrics = c.Namespaces[name]
 		if name != "" {
-			fmt.Printf("%-*v  %-7v  %-4v  %-9v  %-4v  %-4v  %v\n", nsw, name, utils.FmtMilli(n.Cpu.Req), utils.FmtPct(n.Cpu.Util), utils.FmtMiB(n.Mem.Req), utils.FmtPct(n.Mem.Util), (n.Pods.Inuse), utils.FmtPct(n.Pods.Util))
+			fmt.Printf("%-*v  %-7v  %-4v  %-9s  %-4v  %-4v  %v\n", nsw, name, utils.FmtMilli(n.Cpu.Req), utils.FmtPct(n.Cpu.Util), utils.FmtMem(n.Mem.Req), utils.FmtPct(n.Mem.Util), (n.Pods.Inuse), utils.FmtPct(n.Pods.Util))
 		}
 	}
 }
 
 // PrintClusterSummary Print utilization summary for the cluster
 func (c *Clustermetrics) PrintClusterSummary() {
-	memreq := utils.FmtGiB(c.Mem.Req)
-	memavail := utils.FmtGiB(c.Mem.Avail)
-	memcap := utils.FmtGiB(c.Mem.Cap)
+	memreq := utils.FmtMem(c.Mem.Req)
+	memavail := utils.FmtMem(c.Mem.Avail)
+	memcap := utils.FmtMem(c.Mem.Cap)
 	cpureq := utils.FmtCPU(c.Cpu.Req)
 	cpuavail := utils.FmtCPU(c.Cpu.Avail)
 	cpucap := utils.FmtCPU(c.Cpu.Cap)
-	fmt.Printf("%-17s  %-10s %-10s %-10s %s\n", "CLUSTER RESOURCES", "REQUESTED", "AVAILABLE", "CAPACITY", "UTIL")
-	fmt.Printf("%-17s  %-10v %-10v %-10v %s\n", "CPU", cpureq, cpuavail, cpucap, utils.FmtPct(c.Cpu.Util))
-	fmt.Printf("%-17s  %-10v %-10v %-10v %s\n", "MEMORY", memreq, memavail, memcap, utils.FmtPct(c.Mem.Util))
-	fmt.Printf("%-17v  %-10v %-10v %-10v %v\n", "PODS", c.Pods.Inuse, c.Pods.Avail, c.Pods.Cap, utils.FmtPct(c.Pods.Util))
+	fmt.Printf("%-15s  %-10s %-10s %-10s %s\n", "TOTAL RESOURCES", "REQUESTED", "AVAILABLE", "CAPACITY", "UTIL")
+	fmt.Printf("%-15s  %-10v %-10v %-10v %s\n", "CPU", cpureq, cpuavail, cpucap, utils.FmtPct(c.Cpu.Util))
+	fmt.Printf("%-15s  %-10s %-10s %-10s %s\n", "MEMORY", memreq, memavail, memcap, utils.FmtPct(c.Mem.Util))
+	fmt.Printf("%-15v  %-10v %-10v %-10v %v\n", "PODS", c.Pods.Inuse, c.Pods.Avail, c.Pods.Cap, utils.FmtPct(c.Pods.Util))
 }
