@@ -20,13 +20,13 @@ Full license text at: https://gnu.org/licenses/gpl-2.0.txt
 package main
 
 import (
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 
 	"github.com/jedrecord/kutil/pkg/resources"
 	"github.com/jedrecord/kutil/pkg/utils"
+	"github.com/pborman/getopt/v2"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 )
@@ -43,24 +43,43 @@ func showVersion() {
 }
 
 func main() {
-	// Set boolean flags for display output
-	nsflag := flag.Bool("namespaces", false, "Display utilization by namespaces")
-	nodesflag := flag.Bool("nodes", false, "Display utilization by nodes")
-	clusterflag := flag.Bool("cluster", false, "Display utilization for the cluster")
-	versionflag := flag.Bool("version", false, "Display program version")
+	/*
+	 *  Command line options
+	 */
+	// These options require a value
+	//	nameFlag := getopt.StringLong("namespace", 'n', "", "namespace to query")
+	//	nodeFlag := getopt.StringLong("node", rune(0), "", "node name or label to query")
+	kubeconfig := getopt.StringLong("kubeconfig", rune(0), filepath.Join(os.Getenv("HOME"), "/.kube/config"), "path to kubeconfig file")
 
-	// User can provide a kubeconfig file or use default (~/.kube/config)
-	kubeconfig := flag.String("kubeconfig", filepath.Join(os.Getenv("HOME"), "/.kube/config"), "kubeconfig file")
+	// Boolean options
+	namespacesFlag := getopt.BoolLong("namespaces", rune(0), "show namespaces summary")
+	nodesFlag := getopt.BoolLong("nodes", rune(0), "show nodes summary")
+	clusterFlag := getopt.BoolLong("cluster", rune(0), "show cluster utilization")
+	versionFlag := getopt.BoolLong("version", 'v', "show program version info")
+	helpFlag := getopt.BoolLong("help", 'h', "show help summary")
 
-	flag.Parse()
-	if *versionflag {
+	// Parse command line options
+	getopt.Parse()
+
+	// Just show version and exit if versionFlag provided
+	if *versionFlag {
 		showVersion()
 		os.Exit(0)
+	}
+	// Show usage and exit if helpFlag provided
+	if *helpFlag {
+		getopt.PrintUsage(os.Stdout)
+		os.Exit(0)
+	}
+
+	// Bail out if we don't have a proper kubeconfig
+	if !utils.FileExists(*kubeconfig) {
+		utils.LogError("Could not access kubeconfig file")
 	}
 
 	config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
 	if err != nil {
-		utils.LogError("Could not access kubeconfig file")
+		utils.LogError("Could not parse kubeconfig file")
 	}
 	config.AcceptContentTypes = "application/vnd.kubernetes.protobuf, application/json"
 	config.ContentType = "application/vnd.kubernetes.protobuf"
@@ -81,18 +100,18 @@ func main() {
 	mycluster.Load(clientset)
 
 	// Determine output based on flag options (-namespaces, -nodes, -cluster)
-	if *nsflag {
+	if *namespacesFlag {
 		mycluster.PrintNamespaceSummary()
 	}
-	if *nodesflag {
+	if *nodesFlag {
 		mycluster.PrintNodeSummary()
 	}
-	if *clusterflag {
+	if *clusterFlag {
 		mycluster.PrintClusterSummary()
 	}
 
 	// If no options selected default output is node and cluster summary
-	if !*nsflag && !*nodesflag && !*clusterflag {
+	if !*namespacesFlag && !*nodesFlag && !*clusterFlag {
 		mycluster.PrintNodeSummary()
 		fmt.Println()
 		mycluster.PrintClusterSummary()
