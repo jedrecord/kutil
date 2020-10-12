@@ -5,6 +5,7 @@ GC = go build
 GCFLAGS =
 LDFLAGS = -ldflags="-s -w"
 GO111MODULES = on
+UPX := $(shell command -v upx 2> /dev/null)
 #LDFLAGS=-ldflags "-X=main.Version=$(VERSION) -X=main.Build=$(BUILD)"
 #VERSION := $(shell git describe --tags)
 #BUILD := $(shell git rev-parse --short HEAD)
@@ -45,14 +46,21 @@ uninstall:
 
 ## compile: Compile binaries for Linux and Windows
 compile:
-	@echo Compiling stripped binaries for Linux and Windows
+	@echo Compiling stripped binaries for Linux, Mac, and Windows
 	@GOOS=linux GOARCH=amd64 $(GC) $(GCFLAGS) $(LDFLAGS) -o $(BINDIR)/$(APP)-linux-amd64 cmd/$(APP)/main.go
+	@GOOS=darwin GOARCH=amd64 $(GC) $(GCFLAGS) $(LDFLAGS) -o $(BINDIR)/$(APP)-darwin-amd64 cmd/$(APP)/main.go
 	@GOOS=windows GOARCH=amd64 $(GC) $(GCFLAGS) $(LDFLAGS) -o $(BINDIR)/$(APP)-windows-amd64.exe cmd/$(APP)/main.go
 
 ## package: Package stripped binaries for distribition
 package: compile
 	@echo Compressing binaries for distribution
+ifdef UPX
+	@$(UPX) --brute $(BINDIR)/$(APP)-linux-amd64
+	@$(UPX) --brute $(BINDIR)/$(APP)-darwin-amd64
+	@$(UPX) --brute $(BINDIR)/$(APP)-windows-amd64.exe
+endif
 	@GZIP=-9 tar -C $(BINDIR) -czvf $(APP)-linux-amd64.tar.gz $(APP)-linux-amd64
+	@GZIP=-9 tar -C $(BINDIR) -czvf $(APP)-darwin-amd64.tar.gz $(APP)-darwin-amd64
 	@GZIP=-9 tar -C $(BINDIR) -czvf $(APP)-windows-amd64.tar.gz $(APP)-windows-amd64.exe
 
 ## clean: Run "go clean"
